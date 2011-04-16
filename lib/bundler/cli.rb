@@ -46,7 +46,7 @@ module Bundler
 
         if have_groff? && root !~ %r{^file:/.+!/META-INF/jruby.home/.+}
           groff   = "groff -Wall -mtty-char -mandoc -Tascii"
-          pager   = ENV['MANPAGER'] || ENV['PAGER'] || 'less'
+          pager   = ENV['MANPAGER'] || ENV['PAGER'] || 'less -R'
 
           Kernel.exec "#{groff} #{root}/#{command} | #{pager}"
         else
@@ -153,8 +153,6 @@ module Bundler
       "Do not allow the Gemfile.lock to be updated after this install"
     method_option "deployment", :type => :boolean, :banner =>
       "Install using defaults tuned for deployment environments"
-    method_option "production", :type => :boolean, :banner =>
-      "Deprecated, please use --deployment instead"
     def install(path = nil)
       opts = options.dup
       opts[:without] ||= []
@@ -164,17 +162,12 @@ module Bundler
       end
       opts[:without].map!{|g| g.to_sym }
 
+      # Can't use Bundler.settings for this because settings needs gemfile.dirname
       ENV['BUNDLE_GEMFILE'] = File.expand_path(opts[:gemfile]) if opts[:gemfile]
       ENV['RB_USER_INSTALL'] = '1' if Bundler::FREEBSD
 
       # Just disable color in deployment mode
       Bundler.ui.shell = Thor::Shell::Basic.new if opts[:deployment]
-
-      if opts[:production]
-        opts[:deployment] = true
-        Bundler.ui.warn "The --production option is deprecated, and will be removed in " \
-                        "the final release of Bundler 1.0. Please use --deployment instead."
-      end
 
       if (path || opts[:path] || opts[:deployment]) && opts[:system]
         Bundler.ui.error "You have specified both a path to install your gems to, \n" \
@@ -213,13 +206,19 @@ module Bundler
         Bundler.settings[:frozen] = '1'
       end
 
-      # Can't use Bundler.settings for this because settings needs gemfile.dirname
+      # When install is called with --no-deployment, disable deployment mode
+      if opts[:deployment] == false
+        Bundler.settings.delete(:frozen)
+        opts[:system] = true
+      end
+
       Bundler.settings[:path] = nil if opts[:system]
       Bundler.settings[:path] = "vendor/bundle" if opts[:deployment]
       Bundler.settings[:path] = path if path
       Bundler.settings[:path] = opts[:path] if opts[:path]
       Bundler.settings[:bin] = opts["binstubs"] if opts[:binstubs]
-      Bundler.settings[:disable_shared_gems] = '1' if Bundler.settings[:path]
+      Bundler.settings[:no_prune] = true if opts["no-prune"]
+      Bundler.settings[:disable_shared_gems] = Bundler.settings[:path] ? '1' : nil
       Bundler.settings.without = opts[:without] unless opts[:without].empty?
       Bundler.ui.be_quiet! if opts[:quiet]
 
@@ -242,7 +241,7 @@ module Bundler
           "Please use `bundle install --path #{path}` instead."
       end
     rescue GemNotFound => e
-      if opts[:local]
+      if opts[:local] && Bundler.app_cache.exist?
         Bundler.ui.warn "Some gems seem to be missing from your vendor/cache directory."
       end
 
@@ -312,7 +311,7 @@ module Bundler
     def cache
       Bundler.definition.resolve_with_cache!
       Bundler.load.cache
-      Bundler.settings[:no_prune] = true if options[:no_prune]
+      Bundler.settings[:no_prune] = true if options["no-prune"]
       Bundler.load.lock
     rescue GemNotFound => e
       Bundler.ui.error(e.message)
